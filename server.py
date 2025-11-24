@@ -2,120 +2,111 @@ from flask import Flask, request, jsonify
 import re
 import datetime
 import os
-import requests
-import urllib.parse
+from twilio.rest import Client
 
 app = Flask(__name__)
 
-# ==============================
-# CONFIG
-# ==============================
+# ========================
+# CONFIG FROM ENV
+# ========================
+API_KEY = os.getenv("API_KEY")
+TWILIO_SID = os.getenv("TWILIO_SID")
+TWILIO_AUTH = os.getenv("TWILIO_AUTH")
+WHATSAPP_FROM = "whatsapp:+14155238886"
+WHATSAPP_TO = os.getenv("WHATSAPP_TO")
 
-API_KEY = os.getenv("API_KEY")  # Set in Render dashboard
-WHATSAPP_NUMBER = os.getenv("WHATSAPP_NUMBER")
-WHATSAPP_APIKEY = os.getenv("WHATSAPP_APIKEY")
+client = Client(TWILIO_SID, TWILIO_AUTH)
 
 LOG_FILE = "captions_log.txt"
+
 CODE_REGEX = re.compile(r"\b(\d{3,6})\b")
 
 KEYWORDS = [
     "attendance",
     "attendence",
-    "attendance code",
     "enter the code",
+    "attendance code",
     "submit your attendance",
     "mark your attendance",
     "fill the attendance",
-    "note down this code",
-    "write this code",
-    "the code is",
-    "enter the number",
-    "attendance number",
-    "attendance pin",
-    "provide the code",
-    "put the code"
+    "the code is"
 ]
 
-# ==============================
+# ========================
 # HELPERS
-# ==============================
+# ========================
 
 def contains_keyword(text):
-    text_low = text.lower()
+    t = text.lower()
     for kw in KEYWORDS:
-        if kw in text_low:
+        if kw in t:
             return kw
     return None
 
-def send_whatsapp_message(message):
+def send_whatsapp(msg):
     try:
-        msg = urllib.parse.quote(message)
-        url = f"https://api.callmebot.com/whatsapp.php?phone={WHATSAPP_NUMBER}&apikey={WHATSAPP_APIKEY}&text={msg}"
-        requests.get(url)
+        client.messages.create(
+            from_=WHATSAPP_FROM,
+            body=msg,
+            to=f"whatsapp:{WHATSAPP_TO}"
+        )
         print("📲 WhatsApp alert sent!")
-    except:
-        print("WhatsApp error")
+    except Exception as e:
+        print("❌ WhatsApp error:", e)
 
-def append_log(line):
+def append_log(text):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(line + "\n")
+        f.write(text + "\n")
 
-# ==============================
+# ========================
 # CORS
-# ==============================
-
+# ========================
 @app.after_request
-def add_cors_headers(response):
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, x-api-key'
-    response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-    return response
+def cors(resp):
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, x-api-key"
+    resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    return resp
 
-# ==============================
+# ========================
 # MAIN ROUTE
-# ==============================
-
+# ========================
 @app.route("/caption", methods=["POST", "OPTIONS"])
 def caption():
 
-    # Preflight
     if request.method == "OPTIONS":
-        return '', 200
+        return "", 200
 
-    # Security check
-    key = request.headers.get("x-api-key")
-    if key != API_KEY:
+    # authentication
+    if request.headers.get("x-api-key") != API_KEY:
         return "Unauthorized", 401
 
-    data = request.get_json(force=True)
+    data = request.get_json()
     text = data.get("text", "").strip()
 
     if not text:
         return jsonify({"status": "empty"}), 400
 
-    tstamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{tstamp}] {text}"
-    print(line)
-    append_log(line)
+    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_line = f"[{ts}] {text}"
+    print(log_line)
+    append_log(log_line)
 
-    # Keyword alert
+    # detect keyword
     kw = contains_keyword(text)
     if kw:
-        alert = f"⚠️ Attendance alert phrase detected: '{kw}'\n{text}"
-        send_whatsapp_message(alert)
+        send_whatsapp(f"⚠️ Attendance Hint Detected: '{kw}'\n{text}")
 
-    # Code detection alert
+    # detect code
     match = CODE_REGEX.search(text)
     if match:
         code = match.group(1)
-        send_whatsapp_message(f"🔢 Attendance Code Detected: {code}")
+        send_whatsapp(f"🔢 Attendance Code Detected: {code}")
 
     return jsonify({"status": "ok"})
 
-
-# ==============================
-# RENDER START
-# ==============================
-
+# ========================
+# START
+# ========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
